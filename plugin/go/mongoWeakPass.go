@@ -2,12 +2,34 @@ package goplugin
 
 import (
 	"fmt"
-	. "github.com/opensec-cn/kunpeng/config"
 	"github.com/opensec-cn/kunpeng/plugin"
 	"gopkg.in/mgo.v2"
-	"strings"
 	"time"
 )
+
+func MongoAuth(ip string, username string, password string) (result bool, err error) {
+	session, err := mgo.DialWithTimeout("mongodb://"+username+":"+password+"@"+ip+"/"+"admin", time.Second*3)
+	if err == nil {
+		tb, _ := session.DatabaseNames()
+		if len(tb) > 0 {
+			defer session.Close()
+			result = true
+		}
+	}
+	return result, err
+}
+
+func MongoUnAuth(ip string) (result bool, err error) {
+	session, err := mgo.Dial(ip)
+	if err == nil {
+		tb, _ := session.DatabaseNames()
+		if len(tb) > 0 {
+			defer session.Close()
+			result = true
+		}
+	}
+	return result, err
+}
 
 type mongoWeakPass struct {
 	info   plugin.Plugin
@@ -23,7 +45,7 @@ func (d *mongoWeakPass) Init() plugin.Plugin {
 		Remarks: "导致数据库敏感信息泄露，严重可导致服务器直接被入侵控制。",
 		Level:   1,
 		Type:    "WEAKPWD",
-		Author:  "wolf",
+		Author:  "Tolly",
 		References: plugin.References{
 			KPID: "KP-0007",
 		},
@@ -36,48 +58,26 @@ func (d *mongoWeakPass) GetResult() []plugin.Plugin {
 	return result
 }
 func (d *mongoWeakPass) Check(netloc string, meta plugin.TaskMeta) (b bool) {
-	if strings.IndexAny(netloc, "http") == 0 {
-		return
-	}
 	userList := []string{
 		"admin",
 	}
-	session, err := mgo.Dial(netloc)
-	if err == nil && session.Run("serverStatus", nil) == nil {
+	res, err := MongoUnAuth(netloc)
+	if err == nil && res {
 		result := d.info
 		result.Request = fmt.Sprintf("mgo://%s/admin", netloc)
 		result.Remarks = "未授权访问," + result.Remarks
 		d.result = append(d.result, result)
-		return true
+		return res
 	}
 	for _, user := range userList {
 		for _, pass := range meta.PassList {
-			pass = strings.Replace(pass, "{user}", user, -1)
-			dialInfo := &mgo.DialInfo{
-				Addrs:     []string{netloc},
-				Direct:    false,
-				Timeout:   time.Second * time.Duration(Config.Timeout),
-				Database:  "admin",
-				Source:    "admin",
-				Username:  user,
-				Password:  pass,
-				PoolLimit: 4096,
-			}
-			session, err := mgo.DialWithInfo(dialInfo)
-			if err != nil {
-				return
-			}
-			res, err := session.DatabaseNames()
-			if err != nil {
-				return
-			}
-			if res != nil {
-				session.Close()
+			res, err := MongoAuth(netloc, user, pass)
+			if err == nil && res {
 				result := d.info
 				result.Request = fmt.Sprintf("mgo://%s:%s@%s/admin", user, pass, netloc)
 				result.Remarks = fmt.Sprintf("弱口令：%s,%s,%s", user, pass, result.Remarks)
 				d.result = append(d.result, result)
-				b = true
+				b = res
 				break
 			}
 		}
